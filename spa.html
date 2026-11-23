@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Учёт заявок на ремонт</title>
+    <link rel="stylesheet" href="assets/style.css?v=2">
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+</head>
+<body>
+<div id="app">
+    <!-- ВХОД -->
+    <div v-if="!user" class="auth-body">
+        <main class="auth-card">
+            <div class="auth-brand">
+                <span class="brand-mark">Р</span>
+                <div>
+                    <h1>Ремонт<small>заявки · SPA</small></h1>
+                    <p>Учёт заявок на ремонт техники</p>
+                </div>
+            </div>
+            <div v-if="error" class="alert alert-error">{{ error }}</div>
+            <form @submit.prevent="login" class="stack">
+                <label class="field">
+                    <span>Логин</span>
+                    <input type="text" v-model.trim="loginForm.login" required autofocus>
+                </label>
+                <label class="field">
+                    <span>Пароль</span>
+                    <input type="password" v-model="loginForm.password" required>
+                </label>
+                <button class="btn btn-primary btn-block" type="submit" :disabled="loading">Войти</button>
+            </form>
+            <details class="demo">
+                <summary>Тестовые аккаунты</summary>
+                <table>
+                    <tr><td>Менеджер</td><td><code>login1 / pass1</code></td></tr>
+                    <tr><td>Техник</td><td><code>login2 / pass2</code></td></tr>
+                    <tr><td>Оператор</td><td><code>login4 / pass4</code></td></tr>
+                    <tr><td>Заказчик</td><td><code>login6 / pass6</code></td></tr>
+                </table>
+            </details>
+        </main>
+    </div>
+
+    <!-- ОСНОВНОЙ ИНТЕРФЕЙС -->
+    <template v-else>
+        <header class="topbar">
+            <div class="topbar-inner">
+                <a class="brand" href="#" @click.prevent="go('dashboard')">
+                    <span class="brand-mark">Р</span>
+                    <span>Ремонт<small>заявки</small></span>
+                </a>
+                <nav class="nav">
+                    <a href="#" :class="{'is-active': view==='dashboard'}" @click.prevent="go('dashboard')">Обзор</a>
+                    <a href="#" :class="{'is-active': view==='requests' || view==='detail'}" @click.prevent="go('requests')">Заявки</a>
+                    <a v-if="canCreate" href="#" :class="{'is-active': view==='form'}" @click.prevent="openForm(null)">+ Заявка</a>
+                    <a v-if="user.role==='manager'" href="#" :class="{'is-active': view==='report'}" @click.prevent="go('report')">Отчёт</a>
+                </nav>
+                <div class="topbar-right">
+                    <div class="notif">
+                        <button type="button" class="icon-btn" @click="notifOpen = !notifOpen" aria-label="Уведомления">
+                            🔔
+                            <span class="notif-badge" :class="{'is-hidden': !unread}">{{ unread }}</span>
+                        </button>
+                        <div class="notif-pop" v-show="notifOpen">
+                            <div class="notif-head">
+                                <strong>Уведомления</strong>
+                                <button type="button" class="link-btn" @click="readAllNotifs">прочитать</button>
+                            </div>
+                            <ul class="notif-list">
+                                <li v-if="!notifications.length" class="notif-empty">Пока пусто</li>
+                                <li v-for="n in notifications" :key="n.id" class="notif-item" :class="{'is-unread': !Number(n.is_read)}">
+                                    <a v-if="n.request_id" href="#" @click.prevent="notifOpen=false; openRequest(n.request_id)">{{ n.message }}</a>
+                                    <span v-else>{{ n.message }}</span>
+                                    <time>{{ n.created_at }}</time>
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="user-chip">
+                        <span class="avatar">{{ shortName(user.fio)[0] }}</span>
+                        <span class="user-meta">
+                            <strong>{{ shortName(user.fio) }}</strong>
+                            <small>{{ roleLabel(user.role) }}</small>
+                        </span>
+                    </div>
+                    <button class="icon-btn" @click="logout" title="Выйти">↪</button>
+                </div>
+            </div>
+        </header>
+
+        <main class="page">
+            <div v-if="error" class="alert alert-error">{{ error }}</div>
+
+            <!-- ОБЗОР -->
+            <section v-if="view==='dashboard' && stats">
+                <div class="page-head">
+                    <div>
+                        <h1>Привет, {{ shortName(user.fio) }}</h1>
+                        <p class="muted">Реактивная панель управления (Vue 3 + REST API + SSE).</p>
+                    </div>
+                    <button v-if="canCreate" class="btn btn-primary" @click="openForm(null)">+ Новая заявка</button>
+                </div>
+                <section class="kpi-grid">
+                    <article class="card kpi"><span class="kpi-label">Всего заявок</span><strong class="kpi-value">{{ stats.total }}</strong></article>
+                    <article class="card kpi"><span class="kpi-label">В работе</span><strong class="kpi-value">{{ stats.counts.in_progress + stats.counts.waiting_parts }}</strong></article>
+                    <article class="card kpi"><span class="kpi-label">Готовы к выдаче</span><strong class="kpi-value">{{ stats.counts.ready }}</strong></article>
+                    <article class="card kpi"><span class="kpi-label">Средний ремонт</span><strong class="kpi-value">{{ stats.avg_days ?? '—' }}<small> дн.</small></strong></article>
+                </section>
+                <div class="grid-2">
+                    <section class="card">
+                        <div class="card-head">
+                            <h2>Последние заявки</h2>
+                            <a href="#" @click.prevent="go('requests')">все заявки →</a>
+                        </div>
+                        <p v-if="!requests.length" class="muted">Заявок пока нет.</p>
+                        <div v-else class="table-wrap">
+                            <table class="table">
+                                <thead><tr><th>№</th><th>Техника</th><th>Статус</th><th>Мастер</th></tr></thead>
+                                <tbody>
+                                    <tr v-for="r in requests.slice(0, 6)" :key="r.request_id" @click="openRequest(r.request_id)" style="cursor: pointer">
+                                        <td><strong style="color: var(--accent)">#{{ r.request_id }}</strong></td>
+                                        <td><strong>{{ r.tech_type }}</strong><small class="muted block">{{ r.tech_model }}</small></td>
+                                        <td><span :class="'status status-' + r.status">{{ statusLabel(r.status) }}</span></td>
+                                        <td>{{ r.master_fio ? shortName(r.master_fio) : 'не назначен' }}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </section>
+                    <section class="card">
+                        <div class="card-head"><h2>По типам техники</h2></div>
+                        <div class="bars">
+                            <div v-for="row in stats.by_type" :key="row.tech_type" class="bar-row">
+                                <span class="bar-label">{{ row.tech_type }}</span>
+                                <div class="bar-track"><div class="bar-fill" :style="{width: barWidth(row.total, stats.by_type)}"></div></div>
+                                <span class="bar-value">{{ row.total }}</span>
+                            </div>
+                        </div>
+                        <div class="status-grid">
+                            <a v-for="s in statuses" :key="s" href="#" class="status-cell" :class="'status-' + s" @click.prevent="filter.status=s; go('requests')">
+                                <span>{{ statusLabel(s) }}</span>
+                                <strong>{{ stats.counts[s] }}</strong>
+                            </a>
+                        </div>
+                    </section>
+                </div>
+            </section>
+
+            <!-- СПИСОК ЗАЯВОК -->
+            <section v-if="view==='requests'">
+                <div class="page-head">
+                    <div>
+                        <h1>Заявки</h1>
+                        <p class="muted">Найдено: {{ requests.length }}</p>
+                    </div>
+                    <button v-if="canCreate" class="btn btn-primary" @click="openForm(null)">+ Новая заявка</button>
+                </div>
+                <form class="card filters" @submit.prevent="loadRequests">
+                    <label class="field field-grow">
+                        <span>Поиск</span>
+                        <input type="search" v-model="filter.q" @input="loadRequests" placeholder="номер, модель, проблема, клиент…">
+                    </label>
+                    <label class="field">
+                        <span>Статус</span>
+                        <select v-model="filter.status" @change="loadRequests">
+                            <option value="">Все</option>
+                            <option v-for="s in statuses" :key="s" :value="s">{{ statusLabel(s) }}</option>
+                        </select>
+                    </label>
+                    <div class="filters-actions">
+                        <button v-if="filter.q || filter.status" type="button" class="btn btn-ghost" @click="filter.q=''; filter.status=''; loadRequests()">Сбросить</button>
+                    </div>
+                </form>
+                <section class="card">
+                    <p v-if="!requests.length" class="muted">Ничего не найдено.</p>
+                    <div v-else class="table-wrap">
+                        <table class="table">
+                            <thead><tr><th>№</th><th>Дата</th><th>Техника</th><th>Клиент</th><th>Мастер</th><th>Статус</th></tr></thead>
+                            <tbody>
+                                <tr v-for="r in requests" :key="r.request_id" @click="openRequest(r.request_id)" style="cursor: pointer">
+                                    <td><strong style="color: var(--accent)">#{{ r.request_id }}</strong></td>
+                                    <td class="nowrap">{{ formatDate(r.start_date) }}</td>
+                                    <td><strong>{{ r.tech_type }}</strong><small class="muted block">{{ r.tech_model }}</small></td>
+                                    <td>{{ r.client_fio }}<small class="muted block">{{ r.client_phone }}</small></td>
+                                    <td>{{ r.master_fio ? shortName(r.master_fio) : '—' }}</td>
+                                    <td><span :class="'status status-' + r.status">{{ statusLabel(r.status) }}</span></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            </section>
+
+            <!-- КАРТОЧКА ЗАЯВКИ -->
+            <section v-if="view==='detail' && current">
+                <div class="page-head">
+                    <div>
+                        <div class="title-line">
+                            <h1>Заявка №{{ current.request_id }}</h1>
+                            <span :class="'status status-' + current.status">{{ statusLabel(current.status) }}</span>
+                        </div>
+                        <p class="muted">Создана {{ formatDate(current.start_date) }}<span v-if="current.completion_date"> · закрыта {{ formatDate(current.completion_date) }}</span></p>
+                    </div>
+                    <div class="head-actions">
+                        <button class="btn btn-ghost" @click="go('requests')">← К списку</button>
+                        <button v-if="canEditCurrent" class="btn btn-ghost" @click="openForm(current)">Редактировать</button>
+                        <button v-if="user.role==='manager'" class="btn btn-danger" @click="deleteRequest(current.request_id)">Удалить</button>
+                    </div>
+                </div>
+                <div class="grid-2">
+                    <section class="card">
+                        <div class="card-head"><h2>Устройство и проблема</h2></div>
+                        <dl class="info">
+                            <div><dt>Тип</dt><dd>{{ current.tech_type }}</dd></div>
+                            <div><dt>Модель</dt><dd>{{ current.tech_model }}</dd></div>
+                            <div><dt>Заказчик</dt><dd>{{ current.client_fio }}<small class="muted block">{{ current.client_phone }}</small></dd></div>
+                            <div><dt>Мастер</dt><dd>{{ current.master_fio || 'не назначен' }}</dd></div>
+                            <div v-if="current.repair_parts"><dt>Запчасти</dt><dd>{{ current.repair_parts }}</dd></div>
+                        </dl>
+                        <div class="problem"><h3>Описание</h3><p>{{ current.problem }}</p></div>
+                    </section>
+                    <div class="stack">
+                        <section v-if="canChangeStatusCurrent" class="card">
+                            <div class="card-head"><h2>Статус</h2></div>
+                            <form @submit.prevent="saveStatus" class="stack">
+                                <label class="field">
+                                    <span>Новый статус</span>
+                                    <select v-model="statusForm.status">
+                                        <option v-for="s in statuses" :key="s" :value="s">{{ statusLabel(s) }}</option>
+                                    </select>
+                                </label>
+                                <label class="field">
+                                    <span>Запчасти</span>
+                                    <input type="text" v-model="statusForm.repair_parts" placeholder="что заказали или заменили">
+                                </label>
+                                <button class="btn btn-primary" type="submit">Сохранить</button>
+                            </form>
+                        </section>
+                        <section v-if="user.role==='manager' || user.role==='operator'" class="card">
+                            <div class="card-head"><h2>Мастер</h2></div>
+                            <form @submit.prevent="assignMaster" class="stack">
+                                <label class="field">
+                                    <span>Назначить</span>
+                                    <select v-model="masterId">
+                                        <option value="">— снять назначение —</option>
+                                        <option v-for="t in technicians" :key="t.user_id" :value="t.user_id">{{ t.fio }}</option>
+                                    </select>
+                                </label>
+                                <button class="btn" type="submit">Назначить</button>
+                            </form>
+                        </section>
+                        <section v-if="current.events && current.events.length" class="card">
+                            <div class="card-head"><h2>История</h2></div>
+                            <ul class="timeline">
+                                <li v-for="ev in current.events" :key="ev.id">
+                                    <span>{{ statusLabel(ev.old_status) }} → {{ statusLabel(ev.new_status) }}</span>
+                                    <time>{{ ev.created_at }}</time>
+                                </li>
+                            </ul>
+                        </section>
+                    </div>
+                </div>
+                <section class="card">
+                    <div class="card-head"><h2>Комментарии</h2><span class="muted">{{ (current.comments || []).length }}</span></div>
+                    <p v-if="!current.comments || !current.comments.length" class="muted">Комментариев пока нет.</p>
+                    <ul v-else class="comments">
+                        <li v-for="c in current.comments" :key="c.comment_id">
+                            <div class="comment-head"><strong>{{ c.fio }}</strong><span class="muted">{{ roleLabel(c.role) }} · {{ c.created_at }}</span></div>
+                            <p>{{ c.message }}</p>
+                        </li>
+                    </ul>
+                    <form @submit.prevent="addComment" class="comment-form">
+                        <label class="field field-grow">
+                            <span>Новый комментарий</span>
+                            <input type="text" v-model.trim="commentText" placeholder="Напишите что-нибудь по заявке…" required>
+                        </label>
+                        <button class="btn btn-primary" type="submit">Отправить</button>
+                    </form>
+                </section>
+            </section>
+
+            <!-- ФОРМА СОЗДАНИЯ / РЕДАКТИРОВАНИЯ -->
+            <section v-if="view==='form'">
+                <div class="page-head">
+                    <h1>{{ form.request_id ? 'Редактирование №' + form.request_id : 'Новая заявка' }}</h1>
+                    <button class="btn btn-ghost" @click="go('requests')">Отмена</button>
+                </div>
+                <form @submit.prevent="saveRequest" class="card form-grid">
+                    <label v-if="!form.request_id && user.role !== 'customer'" class="field">
+                        <span>Заказчик *</span>
+                        <select v-model="form.client_id" required>
+                            <option value="">— выберите —</option>
+                            <option v-for="c in customers" :key="c.user_id" :value="c.user_id">{{ c.fio }} · {{ c.phone }}</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span>Тип техники *</span>
+                        <select v-model="form.tech_type" required>
+                            <option v-for="t in techTypes" :key="t" :value="t">{{ t }}</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span>Модель *</span>
+                        <input type="text" v-model.trim="form.tech_model" required>
+                    </label>
+                    <label class="field">
+                        <span>Дата обращения</span>
+                        <input type="date" v-model="form.start_date" required>
+                    </label>
+                    <label class="field field-full">
+                        <span>Описание проблемы *</span>
+                        <textarea v-model.trim="form.problem" rows="4" required></textarea>
+                    </label>
+                    <div class="form-actions field-full">
+                        <button class="btn btn-primary" type="submit">Сохранить</button>
+                    </div>
+                </form>
+            </section>
+
+            <!-- ОТЧЁТ (МЕНЕДЖЕР) -->
+            <section v-if="view==='report' && stats">
+                <div class="page-head">
+                    <div>
+                        <h1>Отчёт по заявкам</h1>
+                        <p class="muted">Сводка за выбранный период.</p>
+                    </div>
+                    <div class="head-actions no-print">
+                        <a class="btn btn-ghost" :href="exportUrl">Скачать CSV</a>
+                        <button class="btn" type="button" onclick="window.print()">Печать</button>
+                    </div>
+                </div>
+                <form class="card filters no-print" @submit.prevent="loadStats">
+                    <label class="field"><span>С даты</span><input type="date" v-model="reportFilter.from" @change="loadStats"></label>
+                    <label class="field"><span>По дату</span><input type="date" v-model="reportFilter.to" @change="loadStats"></label>
+                </form>
+                <div class="grid-2">
+                    <section class="card">
+                        <div class="card-head"><h2>По типам техники</h2></div>
+                        <table class="table compact">
+                            <thead><tr><th>Тип</th><th>Всего</th><th>Готово</th><th>Ср. дней</th></tr></thead>
+                            <tbody>
+                                <tr v-for="row in stats.by_type" :key="row.tech_type">
+                                    <td>{{ row.tech_type }}</td><td>{{ row.total }}</td><td>{{ row.done }}</td><td>{{ row.avg_days ?? '—' }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </section>
+                    <section class="card">
+                        <div class="card-head"><h2>По мастерам</h2></div>
+                        <table class="table">
+                            <thead><tr><th>Мастер</th><th>Заявок</th><th>Готово</th></tr></thead>
+                            <tbody>
+                                <tr v-for="row in stats.by_master" :key="row.master">
+                                    <td>{{ row.master }}</td><td>{{ row.total }}</td><td>{{ row.done }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </section>
+                </div>
+            </section>
+        </main>
+    </template>
+
+    <div class="toast" :class="{'is-visible': toastMsg}" v-show="toastMsg">{{ toastMsg }}</div>
+</div>
+<script src="assets/spa.js"></script>
+</body>
+</html>

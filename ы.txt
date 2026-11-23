@@ -1,0 +1,1 @@
+sudo sed -i 's/\r$//' /home/win/shared/site/deploy.sh && sudo bash /home/win/shared/site/deploy.sh
